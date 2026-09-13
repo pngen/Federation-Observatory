@@ -1,0 +1,67 @@
+# Build outputs
+build/
+build-*/
+out/
+install/
+_install/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+*.obj
+*.o
+*.lib
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.gcda
+*.gcno
+*.gcov
+
+# Sanitizer / analysis artifacts
+*.su
+*.log
+core
+core.*
+*.dmp
+crash-*
+
+# Generated traces and runtime state
+*.fostate
+*.fostate.tmp
+*.trace
+*.foobs
+scratch/
+tmp/
+temp/
+
+# IDE / editor
+.vs/
+.vscode/
+.idea/
+*.user
+*.swp
+*~
+.vsconfig
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Toolchain
+compile_commands.json
+.ninja_deps
+.ninja_log
+
+# Local verification scratch space (never part of the repository)
+_devin/
+.devbuild/
+

@@ -1,0 +1,9 @@
+# Normalize every text file to LF in the repository, whatever the working copy does.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.pdf binary
+*.lib binary
+*.exe binary
+*.cubin binary
