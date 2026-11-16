@@ -4,9 +4,11 @@
 // A corrupt state file can never partially apply, and dynamic evidence can never come
 // back as current.
 
+#include <atomic>
 #include <cstdio>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "federation_observatory/process.hpp"
@@ -565,4 +567,32 @@ FO_TEST(persistence, every_record_codec_round_trips) {
   portability.dimensions.push_back(dimension);
   round_trip(portability, fo::codec::encode_portability, fo::codec::decode_portability,
              "portability assessment");
+}
+
+// Saves can overlap (an embedding host saving while the coordinator stops, or two
+// operators): every one must succeed and the file left behind must load.
+FO_TEST(persistence, overlapping_saves_all_succeed_and_leave_a_loadable_state) {
+  const StateFile file("overlap");
+  fo::FederationObservatory original;
+  fixture::World world(original);
+  FO_REQUIRE(world.build(2, 1).ok());
+  constexpr int kThreads = 4;
+  constexpr int kSavesPerThread = 25;
+  std::atomic<int> failed{0};
+  std::vector<std::thread> savers;
+  for (int t = 0; t < kThreads; ++t) {
+    savers.emplace_back([&original, &file, &failed] {
+      for (int i = 0; i < kSavesPerThread; ++i) {
+        if (!original.save_state(file.path).ok()) {
+          failed.fetch_add(1);
+        }
+      }
+    });
+  }
+  for (std::thread& saver : savers) {
+    saver.join();
+  }
+  FO_CHECK_EQ(failed.load(), 0);
+  FO_CHECK(load_durable_state(file.path, fo::default_bounds()).ok());
+  FO_CHECK(!std::filesystem::exists(file.path + ".tmp"));
 }

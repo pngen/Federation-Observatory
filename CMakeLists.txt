@@ -58,8 +58,10 @@ endfunction()
 function(fo_apply_sanitizers target)
   if(FO_SANITIZE)
     if(MSVC)
-      target_compile_options(${target} PRIVATE /fsanitize=address)
-      target_link_options(${target} PRIVATE /fsanitize=address)
+      # Debug information keeps sanitizer reports symbolized; without it MSVC warns
+      # (C5072, LNK4302), which /WX turns into a build failure in Release.
+      target_compile_options(${target} PRIVATE /fsanitize=address /Zi)
+      target_link_options(${target} PRIVATE /fsanitize=address /DEBUG)
     else()
       target_compile_options(${target} PRIVATE
         -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all)

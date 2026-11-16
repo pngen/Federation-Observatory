@@ -75,7 +75,9 @@ void set_nonblocking(NativeSocket socket, bool enabled) noexcept {
 
 void set_reuse_address(NativeSocket socket) noexcept {
   BOOL value = TRUE;
-  ::setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&value),
+  // SO_REUSEADDR on Windows lets a second socket bind a port that is still listening;
+  // exclusive use makes that second bind fail instead.
+  ::setsockopt(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&value),
                static_cast<int>(sizeof(value)));
 }
 #else

@@ -164,7 +164,14 @@ class FederationCoordinator::Impl {
   std::mutex connections_mutex;
   std::map<std::uint64_t, std::shared_ptr<net::Socket>> connections;
   std::uint64_t next_connection_id = 0;
-  std::vector<std::thread> connection_threads;
+  /// A connection's thread and the flag it sets as its last act.
+  struct ConnectionThread {
+    std::thread thread;
+    std::shared_ptr<std::atomic<bool>> finished;
+  };
+  /// Every accept thread adds to this list, so it has its own lock.
+  std::mutex connection_threads_mutex;
+  std::vector<ConnectionThread> connection_threads;
   std::vector<std::thread> accept_threads;
   std::vector<std::thread> ingest_threads;
 
@@ -876,7 +883,23 @@ Status FederationCoordinator::start() {
           impl_->counters.active_connections = impl_->connections.size();
         }
         const std::string peer = socket->peer_address();
-        impl_->connection_threads.emplace_back([this, socket, peer, id] {
+        std::lock_guard<std::mutex> threads_lock(impl_->connection_threads_mutex);
+        // Threads of finished connections are joined and dropped here, so the coordinator
+        // holds a thread only per live connection rather than one per connection it ever
+        // served. They set their flag after their last lock, so joining them cannot wait.
+        for (auto entry = impl_->connection_threads.begin();
+             entry != impl_->connection_threads.end();) {
+          if (entry->finished->load()) {
+            if (entry->thread.joinable()) {
+              entry->thread.join();
+            }
+            entry = impl_->connection_threads.erase(entry);
+          } else {
+            ++entry;
+          }
+        }
+        auto finished = std::make_shared<std::atomic<bool>>(false);
+        impl_->connection_threads.push_back(Impl::ConnectionThread{std::thread([this, socket, peer, id, finished] {
           const Status served = [&] {
             protocol::FrameReader reader(*socket, impl_->config.bounds);
             for (;;) {
@@ -965,11 +988,14 @@ Status FederationCoordinator::start() {
           }();
           (void)served;
           socket->close();
-          std::lock_guard<std::mutex> lock(impl_->connections_mutex);
-          impl_->connections.erase(id);
-          std::lock_guard<std::mutex> counters_lock(impl_->counters_mutex);
-          impl_->counters.active_connections = impl_->connections.size();
-        });
+          {
+            std::lock_guard<std::mutex> lock(impl_->connections_mutex);
+            impl_->connections.erase(id);
+            std::lock_guard<std::mutex> counters_lock(impl_->counters_mutex);
+            impl_->counters.active_connections = impl_->connections.size();
+          }
+          finished->store(true);
+        }), finished});
       }
     });
   }
@@ -1065,8 +1091,23 @@ Status FederationCoordinator::stop() {
   }
 
   join_all(impl_->ingest_threads);
-  join_all(impl_->connection_threads);
+  // The accept threads add connection threads, so they finish first; the list is then
+  // taken under its lock and joined without it.
   join_all(impl_->accept_threads);
+  std::vector<Impl::ConnectionThread> connection_threads;
+  {
+    std::lock_guard<std::mutex> threads_lock(impl_->connection_threads_mutex);
+    connection_threads.swap(impl_->connection_threads);
+  }
+  for (Impl::ConnectionThread& entry : connection_threads) {
+    if (entry.thread.joinable()) {
+      if (entry.thread.get_id() == self) {
+        entry.thread.detach();
+        continue;
+      }
+      entry.thread.join();
+    }
+  }
 
   if (!impl_->config.state_path.empty()) {
     const Status saved = save_state(impl_->config.state_path);

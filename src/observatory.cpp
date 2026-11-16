@@ -174,6 +174,9 @@ class FederationObservatory::Impl {
   Bounds bounds;
 
   mutable std::shared_mutex mutex;
+  /// Serializes saves: they share one temporary file, and the state each one captures
+  /// must reach the file in the order it was captured.
+  mutable std::mutex save_mutex;
 
   std::map<PublisherKey, PublisherAuthority> publishers;
   std::uint64_t save_sequence = 0;
@@ -2320,6 +2323,7 @@ Result<FederationRecord> FederationObservatory::federation(const FederationId& i
 }
 
 Status FederationObservatory::save_state(const std::string& path) const {
+  const std::lock_guard<std::mutex> save_lock(impl_->save_mutex);
   const DurableState state = impl_->capture_durable_state();
   {
     std::unique_lock<std::shared_mutex> lock(impl_->mutex);

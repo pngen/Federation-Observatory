@@ -5,6 +5,7 @@
 // under any interleaving rather than an outcome that depends on scheduling.
 
 #include <atomic>
+#include <cstdio>
 #include <filesystem>
 #include <string>
 #include <thread>
@@ -15,6 +16,16 @@
 #include "federation_observatory/process.hpp"
 #include "fixture.hpp"
 #include "harness.hpp"
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 using namespace fo;
 
@@ -461,3 +472,111 @@ FO_TEST(race, repeated_start_and_stop_is_clean) {
     FO_REQUIRE(coordinator.stop().ok());
   }
 }
+
+FO_TEST(race, second_coordinator_cannot_take_a_listening_port) {
+  fo::CoordinatorConfig config;
+  config.port = 0;
+  config.poll_millis = 1;
+  fo::FederationCoordinator first(config);
+  FO_REQUIRE(first.start().ok());
+  // Two coordinators must never share one listening port: the second start fails.
+  fo::CoordinatorConfig second_config = config;
+  second_config.port = first.port();
+  fo::FederationCoordinator second(second_config);
+  const Status started = second.start();
+  FO_CHECK(!started.ok());
+  if (started.ok()) {
+    FO_REQUIRE(second.stop().ok());
+  }
+  FO_REQUIRE(first.stop().ok());
+}
+
+FO_TEST(race, concurrent_accept_threads_serve_every_connection) {
+  fo::CoordinatorConfig config;
+  config.port = 0;
+  config.poll_millis = 1;
+  config.accept_threads = 8;
+  fo::FederationCoordinator coordinator(config);
+  FO_REQUIRE(coordinator.start().ok());
+  const std::uint16_t port = coordinator.port();
+  constexpr int kClients = 8;
+  constexpr int kRounds = 25;
+  std::atomic<int> connected{0};
+  std::vector<std::thread> clients;
+  for (int c = 0; c < kClients; ++c) {
+    clients.emplace_back([&connected, port] {
+      for (int round = 0; round < kRounds; ++round) {
+        fo::ClientConfig client_config;
+        client_config.host = "127.0.0.1";
+        client_config.port = port;
+        client_config.poll_millis = 1;
+        Result<fo::FederationClient> client = fo::FederationClient::connect(client_config);
+        if (!client.ok()) {
+          continue;
+        }
+        connected.fetch_add(1);
+        const Status closed = client.value().close();
+        (void)closed;
+      }
+    });
+  }
+  for (std::thread& client : clients) {
+    client.join();
+  }
+  FO_CHECK_EQ(connected.load(), kClients * kRounds);
+  FO_REQUIRE(coordinator.stop().ok());
+  FO_CHECK_EQ(coordinator.counters().active_connections, 0u);
+}
+
+#ifdef _WIN32
+// A finished connection must not keep its thread (and the thread's handle) until stop():
+// a long-running coordinator serves far more connections than it ever holds at once.
+FO_TEST(race, finished_connections_release_their_threads) {
+  fo::CoordinatorConfig config;
+  config.port = 0;
+  config.poll_millis = 1;
+  fo::FederationCoordinator coordinator(config);
+  FO_REQUIRE(coordinator.start().ok());
+  const std::uint16_t port = coordinator.port();
+  std::uint64_t accepted = 0;
+  const auto serve_one = [&coordinator, &accepted, port]() {
+    fo::ClientConfig client_config;
+    client_config.host = "127.0.0.1";
+    client_config.port = port;
+    client_config.poll_millis = 1;
+    Result<fo::FederationClient> client = fo::FederationClient::connect(client_config);
+    if (!client.ok()) {
+      return false;
+    }
+    const Status closed = client.value().close();
+    (void)closed;
+    accepted += 1;
+    // The coordinator has accepted this connection and finished with it.
+    while (coordinator.counters().connections_accepted < accepted ||
+           coordinator.counters().active_connections != 0) {
+      std::this_thread::yield();
+    }
+    return true;
+  };
+  FO_REQUIRE(serve_one());
+  DWORD before = 0;
+  FO_REQUIRE(GetProcessHandleCount(GetCurrentProcess(), &before) != 0);
+  constexpr int kConnections = 200;
+  int served = 0;
+  for (int i = 0; i < kConnections; ++i) {
+    if (serve_one()) {
+      served += 1;
+    }
+  }
+  FO_CHECK_EQ(served, kConnections);
+  DWORD after = 0;
+  FO_REQUIRE(GetProcessHandleCount(GetCurrentProcess(), &after) != 0);
+  // A retained thread keeps one handle, so growth that tracks the connection count is the defect.
+  FO_CHECK(after < before + 64);
+  if (!(after < before + 64)) {
+    std::printf("    process handles grew from %lu to %lu over %d finished connections\n",
+                static_cast<unsigned long>(before), static_cast<unsigned long>(after), kConnections);
+  }
+  FO_REQUIRE(coordinator.stop().ok());
+}
+#endif
