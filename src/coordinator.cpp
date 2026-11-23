@@ -1042,7 +1042,14 @@ Status FederationCoordinator::stop() {
   if (!impl_->running.load()) {
     return Status::success();
   }
-  impl_->stopping.store(true);
+  // The flag is set under queue_mutex. An ingest worker tests it under that
+  // mutex before it waits; set without the mutex, the flag and the notification
+  // below could fall between a worker's test and its wait, the notification was
+  // lost, and the join further down waited for a worker that never woke.
+  {
+    std::lock_guard<std::mutex> lock(impl_->queue_mutex);
+    impl_->stopping.store(true);
+  }
   impl_->listener.close();
   impl_->queue_cv.notify_all();
 

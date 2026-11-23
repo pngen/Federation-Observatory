@@ -60,8 +60,10 @@ function(fo_apply_sanitizers target)
     if(MSVC)
       # Debug information keeps sanitizer reports symbolized; without it MSVC warns
       # (C5072, LNK4302), which /WX turns into a build failure in Release.
+      # /fsanitize=address is a compiler option only: the linker does not know it
+      # (LNK4044), and the sanitizer runtime needs a non-incremental link (LNK4300).
       target_compile_options(${target} PRIVATE /fsanitize=address /Zi)
-      target_link_options(${target} PRIVATE /fsanitize=address /DEBUG)
+      target_link_options(${target} PRIVATE /INCREMENTAL:NO /DEBUG)
     else()
       target_compile_options(${target} PRIVATE
         -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all)
